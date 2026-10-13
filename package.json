@@ -1,0 +1,14 @@
+{
+  "name": "tradepulse",
+  "version": "1.0.0",
+  "description": "TradePulse - Real-time Trading Application",
+  "private": true,
+  "scripts": {
+    "server": "npm --prefix server run dev",
+    "client": "npm --prefix client run dev",
+    "db:create": "npm --prefix server run db:create",
+    "migrate": "npm --prefix server run migrate",
+    "import:legacy": "npm --prefix server run import:legacy",
+    "test": "npm --prefix server test"
+  }
+}

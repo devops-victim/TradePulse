@@ -1,0 +1,111 @@
+{
+  "info": {
+    "name": "TradePulse PostgreSQL / External BSE",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000"
+    },
+    {
+      "key": "jobId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/health"
+      }
+    },
+    {
+      "name": "Trades page",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/trades?page=1"
+      }
+    },
+    {
+      "name": "Trade details",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/trades/BSE-TRD-000001"
+      }
+    },
+    {
+      "name": "Trade totals",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/trades/stats"
+      }
+    },
+    {
+      "name": "SSE",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/events"
+      }
+    },
+    {
+      "name": "Start pull",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "postman-pull-1"
+          }
+        ],
+        "url": "{{baseUrl}}/api/pulls",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"delayMs\": 900000,\n  \"mode\": \"append\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Pull status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/pulls/{{jobId}}"
+      }
+    },
+    {
+      "name": "Check source explicitly",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{baseUrl}}/api/pulls/{{jobId}}/refresh"
+      }
+    },
+    {
+      "name": "Retry pull",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{baseUrl}}/api/pulls/{{jobId}}/retry"
+      }
+    },
+    {
+      "name": "Manual orders",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/orders"
+      }
+    }
+  ]
+}

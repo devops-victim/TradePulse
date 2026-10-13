@@ -137,6 +137,10 @@ test('PostgreSQL migration, ingestion, restart recovery, REST and durable SSE',a
       assert.equal((await jobRepository.get(failed.jobId)).status,'completed');
     });
     await t.test('webhooks reject mismatched correlation and acknowledge duplicate source failures',async ()=> {
+      // This subtest exercises receiver state transitions, not extraction.
+      // Prevent LISTEN notifications from racing its deliberately assigned IDs.
+      await awaitWorker(worker);worker.stopping=true;
+      try {
       const existing=await jobRepository.latest();
       // An unknown client ID must not match an existing external job via OR.
       await assert.rejects(jobRepository.notify(existing.external_job_id,randomUUID()),error=>error.status===404);
@@ -161,6 +165,7 @@ test('PostgreSQL migration, ingestion, restart recovery, REST and durable SSE',a
       assert.equal(attached.notification_received,true);
       await assert.rejects(jobRepository.attachExternal(early.job_id,randomUUID(),false),/does not match/);
       await jobRepository.fail(early.job_id,new Error('Isolated callback correlation fixture finished'));
+      } finally {worker.stopping=false;}
     });
     await t.test('conflicting duplicate fails atomically; manual order never enters external ledger',async ()=> {
       const {job}=await jobRepository.create({delayMs:0,mode:'append',filters:{}},'conflict');

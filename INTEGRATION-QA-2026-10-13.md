@@ -1,6 +1,6 @@
 # TradePulse local integration audit — 2026-10-13
 
-**Verdict: does not yet meet the automatic completion requirement.** The exchange completes extraction, but TradePulse remains waiting until an explicit manual status refresh. PostgreSQL persistence, validation, cursor ingestion, deduplication and backend SSE worked after that refresh. Browser checks are blocked by a saved browser access denial.
+**Latest backend retest: PASS for automatic webhook completion.** After the independent BSE service implemented notifications and TradePulse activated webhook mode, a live 31-second extraction completed automatically. Browser checks remain unverified. The original audit below records the earlier missing-publisher failure; see the final retest section for current evidence.
 
 ## Architecture discovered
 
@@ -75,3 +75,18 @@ The system demonstrates working HTTP ingestion and PostgreSQL/SSE delivery after
 TradePulse's receiver now rejects mismatched job correlation, validates notification bodies, and acknowledges repeated terminal source failures without duplicate events. Webhook configuration validates secret length and production HTTPS. Tests cover early callbacks, duplicate completion/failure delivery and an authenticated callback across an actual test HTTP boundary that triggers bounded ingestion without manual refresh or readiness polling. The complete backend suite passed 17 tests; frontend lint/build passed. Tests use a unique temporary PostgreSQL schema and leave application data untouched.
 
 See [the independent BSE service implementation prompt](docs/BSE-SERVICE-FIX-PROMPT.md). The external publisher is still a deployment dependency. Local `.env` was not changed and webhook mode must only be activated after BSE implements registration and authenticated delivery. The original table above records the initial live audit, not a claim that the unchanged source now publishes notifications.
+
+## Live webhook retest after BSE implementation
+
+Verified both services healthy, equal configured secrets without displaying them, and BSE's callback registration/outbox implementation. Changed the ignored local TradePulse `.env` from manual to webhook; the user restarted its backend. No credentials or local `.env` are committed.
+
+- TradePulse job: `1a6744f5-4821-485f-9fb2-2892ae8adff8`; BSE extraction: `4128a2d3-a847-4e8e-bd3d-f0dc68813c18`.
+- POST /api/pulls: 202 in **22 ms**, delay 31,000 ms. Same-key repeat returned the same job. Before completion, source results returned 409 in 6 ms; concurrent persisted page returned 30 rows in 8 ms.
+- **Automatic completion in 31,876 ms, zero manual refresh requests.** Source outbox delivered the authenticated notification in one attempt and recorded receiver HTTP 202. TradePulse completed after twenty cursor batches, receiving 10,000 records.
+- **Deduplication/data integrity:** zero inserted, 10,000 skipped. BSE remained at 10,000 trades, TradePulse at 20,000. All 10,000 source records matched persisted core fields including microsecond timestamps, and the complete ledger hash was unchanged.
+- **Two SSE clients** rotated after 25,086 / 25,066 ms, reconnected with cursors and both received completion event ID 73. Affected count zero correctly reflects a duplicate-only pull.
+- REST pagination: pages 1 / 2 / 667 returned 30 / 30 / 20 records, total 20,000.
+- Same-key POST /extractions with identical callback metadata returned the existing external ID, verifying live source idempotency. TradePulse's optional automatic initiation-retry flag was not changed by this test.
+- Existing source webhook suite: **17 passed**, including >30-second extraction and source process crash/restart delivery, using isolated fixtures. TradePulse suite initially exposed a race in its notification test setup; isolated receiver state tests from worker execution, then **17 passed**. Application runtime code did not change in this retest.
+
+The missing completion integration is resolved for the running local backend pair. Browser rendering/runtime network/console checks remain unverified because browser access was previously denied. This duplicate-only live pull validates automatic completion and SSE; it does not demonstrate newly inserted rows visually appearing in the React dashboard. Cloud callback reachability has not been tested.

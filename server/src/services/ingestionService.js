@@ -55,9 +55,10 @@ export class IngestionService {
   async notification(req) {
     const expected=Buffer.from(`Bearer ${config.webhookSecret}`),actual=Buffer.from(req.headers.authorization || '');
     if (!config.webhookSecret || actual.length!==expected.length || !timingSafeEqual(actual,expected)) throw new HttpError(403,'Invalid webhook credentials');
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) throw new HttpError(400,'Notification must be a JSON object');
     const { externalJobId, clientJobId, status }=req.body;
     if (typeof externalJobId!=='string' || !externalJobId || externalJobId.length>100) throw new HttpError(400,'externalJobId is required');
-    if (clientJobId) validJobId(clientJobId);
+    if (clientJobId !== undefined && clientJobId !== null) validJobId(clientJobId);
     if (!['completed','failed'].includes(status)) throw new HttpError(400,'Unsupported extraction notification status');
     const job=await jobRepository.notify(externalJobId,clientJobId,status);
     if (!['completed','failed'].includes(job.status)) this.worker.wake(job.job_id);

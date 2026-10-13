@@ -26,7 +26,12 @@ export function loadConfig(env = process.env) {
   const completionMode = env.BSE_COMPLETION_MODE || 'manual';
   if (!['manual', 'webhook'].includes(completionMode)) throw new Error('Invalid BSE_COMPLETION_MODE');
   if (completionMode === 'webhook' && (!env.BSE_WEBHOOK_SECRET || !env.BSE_CALLBACK_URL)) throw new Error('Webhook mode requires BSE_WEBHOOK_SECRET and BSE_CALLBACK_URL');
-  if (env.BSE_CALLBACK_URL) url('BSE_CALLBACK_URL', '', ['http:', 'https:']);
+  if (completionMode === 'webhook' && env.BSE_WEBHOOK_SECRET.length < 32) throw new Error('BSE_WEBHOOK_SECRET must contain at least 32 characters');
+  if (env.BSE_CALLBACK_URL) {
+    const callback=url('BSE_CALLBACK_URL', '', ['http:', 'https:']);
+    if (callback.username || callback.password || callback.hash) throw new Error('BSE_CALLBACK_URL must not contain credentials or a fragment');
+    if (env.NODE_ENV === 'production' && callback.protocol !== 'https:') throw new Error('Production BSE_CALLBACK_URL requires HTTPS');
+  }
   return {
     port: integer('PORT', 4000, 1, 65535), nodeEnv: env.NODE_ENV || 'development', databaseUrl: database.toString(),
     ssl: sslMode === 'disable' ? false : { rejectUnauthorized: true, ...(env.PG_SSL_CA_FILE ? { ca: readFileSync(env.PG_SSL_CA_FILE, 'utf8') } : {}) },

@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import dotenv from 'dotenv';
+import express from 'express';
 dotenv.config({path:new URL('../.env',import.meta.url),quiet:true});
 const schema=`tp_test_${randomUUID().replaceAll('-','')}`;
 const testUrl=new URL(process.env.TEST_DATABASE_URL || process.env.DATABASE_URL);
@@ -135,6 +136,32 @@ test('PostgreSQL migration, ingestion, restart recovery, REST and durable SSE',a
       assert.equal(reconciled.httpStatus,202);await awaitWorker(worker);
       assert.equal((await jobRepository.get(failed.jobId)).status,'completed');
     });
+    await t.test('webhooks reject mismatched correlation and acknowledge duplicate source failures',async ()=> {
+      const existing=await jobRepository.latest();
+      // An unknown client ID must not match an existing external job via OR.
+      await assert.rejects(jobRepository.notify(existing.external_job_id,randomUUID()),error=>error.status===404);
+      const {job}=await jobRepository.create({delayMs:0,mode:'append',filters:{}},'webhook-failure');
+      const externalId=randomUUID();
+      await jobRepository.attachExternal(job.job_id,externalId,false);
+      await assert.rejects(jobRepository.notify(existing.external_job_id,job.job_id),error=>error.status===409);
+      const send=body=>fetch(`${base}/api/bse/notifications`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer test-only-secret'},body:JSON.stringify(body)});
+      const payload={externalJobId:externalId,clientJobId:job.job_id,status:'failed'};
+      assert.equal((await send(payload)).status,202);
+      const failed=await jobRepository.get(job.job_id);
+      assert.equal(failed.status,'failed');assert.equal(failed.phase,'source_failed');assert.ok(failed.completed_at);
+      const count=(await pool.query("SELECT COUNT(*) FROM app_events WHERE job_id=$1 AND event_type='import_failed'",[job.job_id])).rows[0].count;
+      assert.equal((await send(payload)).status,202);
+      assert.equal((await pool.query("SELECT COUNT(*) FROM app_events WHERE job_id=$1 AND event_type='import_failed'",[job.job_id])).rows[0].count,count);
+      assert.equal((await send({...payload,clientJobId:''})).status,400);
+      assert.equal((await send({...payload,status:'processing'})).status,400);
+      const {job:early}=await jobRepository.create({delayMs:0,mode:'append',filters:{}},'early-callback');
+      const earlyExternal=randomUUID();
+      await jobRepository.notify(earlyExternal,early.job_id);
+      const attached=await jobRepository.attachExternal(early.job_id,earlyExternal,false);
+      assert.equal(attached.notification_received,true);
+      await assert.rejects(jobRepository.attachExternal(early.job_id,randomUUID(),false),/does not match/);
+      await jobRepository.fail(early.job_id,new Error('Isolated callback correlation fixture finished'));
+    });
     await t.test('conflicting duplicate fails atomically; manual order never enters external ledger',async ()=> {
       const {job}=await jobRepository.create({delayMs:0,mode:'append',filters:{}},'conflict');
       await jobRepository.attachExternal(job.job_id,randomUUID(),true);
@@ -153,6 +180,37 @@ test('PostgreSQL migration, ingestion, restart recovery, REST and durable SSE',a
       assert.equal((await pool.query('SELECT COUNT(*) FROM legacy_archive')).rows[0].count,'10031');
       assert.equal((await api('/api/worker/logs')).data.length,20);
       assert.equal((await pool.query("SELECT COUNT(*) FROM trades WHERE source='legacy_import'")).rows[0].count,'10000');
+    });
+    await t.test('HTTP source callback drives bounded ingestion without manual refresh or status polling',async ()=> {
+      const originalSource=worker.source;
+      const before=(await tradeRepository.getStats()).totalTrades;
+      const externalId=randomUUID();let registration,statusCalls=0,resultCalls=0,delivery;
+      const exchange=await new Promise(resolve=> {
+        // Test-only transport fixture; never part of the application runtime.
+        const app=express();app.use(express.json());
+        app.post('/extractions',(req,res)=> {registration=req.body;res.status(202).json({jobId:externalId,status:'pending'});});
+        app.get('/extractions/:id',(req,res)=> {statusCalls++;res.json({data:{status:'completed',total_records:2}});});
+        app.get('/extractions/:id/results',(req,res)=> {resultCalls++;const second=req.query.cursor==='next';res.json({data:[record(second ? 201 : 200)],nextCursor:second ? null : 'next'});});
+        const s=app.listen(0,'127.0.0.1',()=>resolve(s));
+      });
+      try {
+        worker.source=new BseClient({...config,bseBaseUrl:`http://127.0.0.1:${exchange.address().port}`,completionMode:'webhook',callbackUrl:`${base}/api/bse/notifications`,batchSize:1});
+        const accepted=await api('/api/pulls','POST',{delayMs:31000,idempotencyKey:'http-webhook'});
+        assert.equal(accepted.httpStatus,202);await awaitWorker(worker);
+        assert.equal(statusCalls,0);assert.equal(resultCalls,0);
+        assert.equal(registration.clientJobId,accepted.jobId);assert.equal(registration.delay,31000);
+        delivery=await fetch(registration.callbackUrl,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer test-only-secret'},body:JSON.stringify({externalJobId:externalId,clientJobId:registration.clientJobId,status:'completed'})});
+        assert.equal(delivery.status,202);await delivery.body.cancel();await awaitWorker(worker);
+        const completed=await jobRepository.get(accepted.jobId);
+        assert.equal(completed.status,'completed',completed.error_message);
+        assert.equal(completed.records_received,2);assert.equal(completed.records_inserted,2);
+        assert.equal(statusCalls,1);assert.equal(resultCalls,2);
+        assert.equal((await tradeRepository.getStats()).totalTrades,before+2);
+        const duplicate=await fetch(registration.callbackUrl,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer test-only-secret'},body:JSON.stringify({externalJobId:externalId,clientJobId:registration.clientJobId,status:'completed'})});
+        assert.equal(duplicate.status,202);await duplicate.body.cancel();await awaitWorker(worker);
+        assert.equal(statusCalls,1);assert.equal(resultCalls,2);
+        assert.equal((await pool.query("SELECT COUNT(*) FROM app_events WHERE job_id=$1 AND event_type='import_completed'",[accepted.jobId])).rows[0].count,'1');
+      } finally {worker.source=originalSource;exchange.closeAllConnections();await new Promise(r=>exchange.close(r));}
     });
     if (process.env.TEST_LIVE_BSE==='true') await t.test('real independently hosted BSE extraction and bounded retrieval',async ()=> {
       await reset();

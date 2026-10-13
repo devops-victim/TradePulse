@@ -50,14 +50,18 @@ export const jobRepository = {
   },
   async notify(externalId, internalId, status='completed') {
     return transaction(async client => {
-      const job = (await client.query('SELECT * FROM ingestion_jobs WHERE external_job_id=$1 OR ($2::uuid IS NOT NULL AND job_id=$2) FOR UPDATE',[externalId,internalId || null])).rows[0];
+      // An early notification may arrive before the extraction receipt. When
+      // supplied, clientJobId is authoritative; never select an unrelated job
+      // merely because its external ID matches one half of the notification.
+      const job = (await client.query('SELECT * FROM ingestion_jobs WHERE ($2::uuid IS NOT NULL AND job_id=$2) OR ($2::uuid IS NULL AND external_job_id=$1) FOR UPDATE',[externalId,internalId || null])).rows[0];
       if (!job) throw new HttpError(404,'Unknown extraction job');
       if (job.external_job_id && job.external_job_id !== externalId) throw new HttpError(409,'External job ID does not match');
       if (job.status === 'completed') return job;
+      if (job.status === 'failed' && job.phase === 'source_failed' && status === 'failed') return job;
       if (job.status === 'failed') throw new HttpError(409,'Retry the failed ingestion explicitly before redelivery');
       if (job.notification_received && status==='completed') return job;
       const failed=status==='failed';
-      const { rows:[updated] } = await client.query("UPDATE ingestion_jobs SET external_job_id=COALESCE(external_job_id,$2),notification_received=NOT $3,status=CASE WHEN $3 THEN 'failed' ELSE status END,error_message=CASE WHEN $3 THEN 'External extraction failed' ELSE error_message END,updated_at=NOW() WHERE job_id=$1 RETURNING *",[job.job_id,externalId,failed]);
+      const { rows:[updated] } = await client.query("UPDATE ingestion_jobs SET external_job_id=COALESCE(external_job_id,$2),notification_received=NOT $3,status=CASE WHEN $3 THEN 'failed' ELSE status END,phase=CASE WHEN $3 THEN 'source_failed' ELSE phase END,completed_at=CASE WHEN $3 THEN NOW() ELSE completed_at END,error_message=CASE WHEN $3 THEN 'External extraction failed' ELSE error_message END,updated_at=NOW() WHERE job_id=$1 RETURNING *",[job.job_id,externalId,failed]);
       await recordEvent(client,failed ? 'import_failed' : 'ingestion_ready',job.job_id,0,failed ? {status:'failed',error:'External extraction failed'} : {});
       return updated;
     });

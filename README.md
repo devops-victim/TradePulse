@@ -88,9 +88,13 @@ Content-Type: application/json
 {"externalJobId":"SOURCE_JOB_ID","clientJobId":"OPTIONAL_INTERNAL_UUID","status":"completed"}
 ```
 
-`status` may be completed or failed. Notifications are acknowledged after their state is persisted, before ingestion finishes. Duplicate notifications for a completed job are safe. The source should retry notification delivery after disconnects. Configure the callback secret on the source separately; TradePulse never embeds it in extraction metadata.
+`status` may be completed or failed. Notifications are acknowledged with 202 after their state is persisted, before ingestion finishes. Duplicate completed notifications and repeated terminal source-failure notifications are safe. When supplied, `clientJobId` must identify the same job as `externalJobId`; mismatched correlation is rejected. Early callbacks can attach the external ID before the extraction receipt arrives. Configure the callback secret (at least 32 characters in webhook mode) on the source separately; TradePulse never embeds it in extraction metadata. Production callback URLs must use HTTPS.
 
 Webhook mode sends `callbackUrl` and `clientJobId` in the extraction request as registration metadata. The current BSE service rejects those fields, so **do not enable webhook mode until the external service supports both registration and authenticated delivery**. No source-side code was added to this repository.
+
+Use [the BSE service implementation prompt](docs/BSE-SERVICE-FIX-PROMPT.md) to add the missing publisher, durable delivery and upstream idempotency in the independent repository. After its tests pass, set `BSE_COMPLETION_MODE=webhook`, the reachable `BSE_CALLBACK_URL`, and the shared `BSE_WEBHOOK_SECRET` on TradePulse and restart. Enable `BSE_SUPPORTS_IDEMPOTENCY=true` only after source support is verified. For cloud deployment, localhost is not a callback address for a separately hosted service; use the public HTTPS backend URL.
+
+TradePulse tests include a test-only HTTP source fixture that registers the callback and delivers an authenticated notification. It verifies ingestion across cursor pages without a manual refresh, with zero readiness requests before notification and one metadata verification afterward. This fixture is not an exchange service in the application runtime.
 
 ## Ingestion and recovery
 
@@ -181,5 +185,3 @@ Provision PostgreSQL, apply migrations as a release step, configure the independ
 When your external API is cloud-hosted, set BSE_API_BASE_URL to its HTTPS origin; the same adapter is used without rebuilding the dashboard. Set BSE_CALLBACK_URL to the publicly reachable TradePulse notification URL only after the source implements webhook support.
 
 The remaining source-side work is completion notification support and, ideally, idempotent extraction creation. Neither is falsely emulated by timers or polling in TradePulse.
-#   t r a d e p u l s e  
- 

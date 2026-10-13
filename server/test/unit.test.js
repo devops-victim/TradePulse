@@ -32,6 +32,23 @@ test('external adapter follows the independently hosted extraction contract',asy
   client.request=async ()=>({data:[sample],nextCursor:'same'});
   await assert.rejects(client.results('external-1','same'),/did not advance/);
 });
+test('webhook registration correlates jobs without transmitting the notification secret',async ()=> {
+  const client=new BseClient({bseBaseUrl:'http://localhost:4001',completionMode:'webhook',callbackUrl:'https://trades.example/api/bse/notifications',webhookSecret:'private-secret',batchSize:500});
+  let sent;
+  client.request=async (path,options)=> {sent={path,options};return {jobId:'source-job',status:'pending'};};
+  await client.initiate({job_id:'internal-job',idempotency_key:'request-key',request:{delayMs:31000,filters:{symbol:'TCS'}}});
+  assert.deepEqual(sent.options.body,{delay:31000,symbol:'TCS',clientJobId:'internal-job',callbackUrl:'https://trades.example/api/bse/notifications'});
+  assert.equal(sent.options.idempotencyKey,'request-key');
+  assert.ok(!JSON.stringify(sent).includes('private-secret'));
+});
+test('webhook configuration validates secrets and production callback transport',()=> {
+  const env={DATABASE_URL:'postgresql://u:p@localhost/tradepulse',BSE_COMPLETION_MODE:'webhook',BSE_CALLBACK_URL:'http://localhost:4000/api/bse/notifications',BSE_WEBHOOK_SECRET:'s'.repeat(32)};
+  assert.equal(loadConfig(env).completionMode,'webhook');
+  assert.throws(()=>loadConfig({...env,BSE_WEBHOOK_SECRET:'short'}),/32 characters/);
+  assert.throws(()=>loadConfig({...env,NODE_ENV:'production'}),/HTTPS/);
+  assert.throws(()=>loadConfig({...env,BSE_CALLBACK_URL:'https://u:p@trades.example/api/bse/notifications'}),/credentials/);
+  assert.equal(loadConfig({...env,NODE_ENV:'production',BSE_CALLBACK_URL:'https://trades.example/api/bse/notifications'}).completionMode,'webhook');
+});
 test('unsafe extraction creation is never automatically retried',async ()=> {
   const original=globalThis.fetch;let calls=0;
   globalThis.fetch=async ()=> {calls++;throw new TypeError('network failure');};

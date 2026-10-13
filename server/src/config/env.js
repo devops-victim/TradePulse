@@ -16,7 +16,15 @@ export function loadConfig(env = process.env) {
     return value;
   };
   const database = url('DATABASE_URL', '', ['postgres:', 'postgresql:']);
-  if (decodeURIComponent(database.pathname.slice(1)) !== 'tradepulse' && env.NODE_ENV !== 'test') throw new Error('DATABASE_URL must select the dedicated tradepulse database');
+  const databaseName = decodeURIComponent(database.pathname.slice(1));
+
+  if (
+    databaseName !== 'tradepulse' &&
+    !/^tradepulse_db(?:_[a-z0-9]+)?$/.test(databaseName) &&
+    env.NODE_ENV !== 'test'
+  ) {
+    throw new Error('DATABASE_URL must select a dedicated TradePulse database');
+  }
   const bse = url('BSE_API_BASE_URL', 'http://localhost:4001', ['http:', 'https:']);
   const cloud = !['localhost', '127.0.0.1', '[::1]'].includes(database.hostname);
   const sslMode = env.PG_SSL_MODE || database.searchParams.get('sslmode') || (cloud ? 'verify-full' : 'disable');

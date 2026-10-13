@@ -66,16 +66,23 @@ export function useTradePulseSSE() {
     const result=await request(`/api/pulls/${id}/retry`,{method:'POST'});setImportStatus(jobStatus(result.data));return result;
   },[]);
   useEffect(()=> {
-    let stream,reconnectTimer,disposed=false;
+    let stream,reconnectTimer,disposed=false,reconnectDelay=1000;
     refreshData();
     function connect() {
       if (disposed) return;
       stream=new EventSource(`/api/events?cursor=${lastEventIdRef.current}`);
-      const reconnect=()=> { if (disposed) return;setIsConnected(false);stream.close();clearTimeout(reconnectTimer);reconnectTimer=setTimeout(connect,1000); };
-      stream.onerror=reconnect;stream.addEventListener('reconnect',reconnect);
+      const reconnect=(scheduled=false)=> {
+        if (disposed) return;
+        setIsConnected(false);stream.close();clearTimeout(reconnectTimer);
+        const delay=scheduled ? 1000 : reconnectDelay;
+        if (!scheduled) reconnectDelay=Math.min(reconnectDelay*2,30000);
+        reconnectTimer=setTimeout(connect,delay);
+      };
+      stream.onerror=()=>reconnect();stream.addEventListener('reconnect',()=>reconnect(true));
       stream.addEventListener('connected',event=> {
         try {
           const snapshot=JSON.parse(event.data);
+          reconnectDelay=1000;
           jobRevision.current++;
           setStats(snapshot.stats);setImportStatus({...jobStatus(snapshot.importJob),completionMode:snapshot.completionMode});setIsConnected(true);
           if (snapshot.eventId!==lastEventIdRef.current) refreshData();

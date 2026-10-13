@@ -5,10 +5,12 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import express from 'express';
+import {loadConfig} from '../src/config/env.js';
 dotenv.config({path:new URL('../.env',import.meta.url),quiet:true});
 const schema=`tp_test_${randomUUID().replaceAll('-','')}`;
 const testUrl=new URL(process.env.TEST_DATABASE_URL || process.env.DATABASE_URL);
-const admin=new pg.Pool({connectionString:testUrl.toString()});
+const testConfig=loadConfig({...process.env,DATABASE_URL:testUrl.toString(),NODE_ENV:'test'});
+const admin=new pg.Pool({connectionString:testConfig.databaseUrl,ssl:testConfig.ssl});
 await admin.query(`CREATE SCHEMA "${schema}"`);
 testUrl.searchParams.set('options',`-c search_path=${schema}`);
 process.env.DATABASE_URL=testUrl.toString();process.env.NODE_ENV='test';
@@ -27,7 +29,7 @@ const {importLegacy}=await import('../scripts/importLegacy.js');
 
 class Source {
   constructor() {this.calls=0;this.pages=[];this.fail=false;this.delayReceipt=0;}
-  async initiate() {this.calls++;if(this.delayReceipt) await new Promise(r=>setTimeout(r,this.delayReceipt));if(this.fail) throw new Error('Source unavailable');return {id:randomUUID(),ready:false};}
+  async initiate() {this.calls++;if(this.receiptGate) await this.receiptGate;if(this.delayReceipt) await new Promise(r=>setTimeout(r,this.delayReceipt));if(this.fail) throw new Error('Source unavailable');return {id:randomUUID(),ready:false};}
   async status() {return {status:'completed'};}
   async results(id,cursor) {return this.pages[Number(cursor || 0)] || {data:[],nextCursor:null,total:0};}
 }
@@ -49,13 +51,17 @@ test('PostgreSQL migration, ingestion, restart recovery, REST and durable SSE',a
       assert.ok(columns.some(c=>c.column_name==='timestamp' && c.data_type==='timestamp with time zone'));
     });
     await t.test('acceptance does not wait for slow source; concurrent callers cannot duplicate a worker',async ()=> {
-      source.delayReceipt=1000;
-      const before=Date.now();const result=await api('/api/pulls','POST',{delayMs:900000,idempotencyKey:'same'});
-      assert.equal(result.httpStatus,202);assert.ok(Date.now()-before<800);
+      let releaseReceipt;source.receiptGate=new Promise(resolve=>{releaseReceipt=resolve;});
+      try {
+      const result=await api('/api/pulls','POST',{delayMs:900000,idempotencyKey:'same'});
+      // A withheld source receipt proves acceptance is independent of source
+      // latency, including when PostgreSQL itself is accessed over the WAN.
+      assert.equal(result.httpStatus,202);assert.equal((await jobRepository.get(result.jobId)).external_job_id,null);
       assert.equal((await api('/api/pulls','POST',{delayMs:900000,idempotencyKey:'same'})).jobId,result.jobId);
       assert.equal((await api('/api/pulls','POST',{delayMs:900000,idempotencyKey:'other'})).httpStatus,409);
       assert.equal((await api('/api/trades')).httpStatus,200);
-      await awaitWorker(worker);assert.equal(source.calls,1);source.delayReceipt=0;
+      } finally {releaseReceipt();source.receiptGate=null;}
+      await awaitWorker(worker);assert.equal(source.calls,1);
     });
     await t.test('waiting job survives new worker; no automatic status polling',async ()=> {
       const job=(await jobRepository.active())[0];

@@ -57,3 +57,12 @@ test('unsafe extraction creation is never automatically retried',async ()=> {
     await assert.rejects(client.request('/extractions',{method:'POST',body:{delay:0}}));assert.equal(calls,1);
   } finally {globalThis.fetch=original;}
 });
+test('upstream rejection exposes a safe code and actionable callback hint without retries',async ()=> {
+  const original=globalThis.fetch;let calls=0;
+  globalThis.fetch=async ()=> {calls++;return new Response(JSON.stringify({error:{code:'INVALID_CALLBACK_URL',message:'sensitive upstream detail'}}),{status:400});};
+  try {
+    const client=new BseClient({bseBaseUrl:'http://localhost:4001',bseTimeoutMs:1000,externalIdempotency:true});
+    await assert.rejects(client.request('/extractions',{method:'POST',body:{delay:30000}}),error=>error.message.includes('INVALID_CALLBACK_URL') && error.message.includes('BSE_CALLBACK_ALLOWLIST') && !error.message.includes('sensitive'));
+    assert.equal(calls,1);
+  } finally {globalThis.fetch=original;}
+});

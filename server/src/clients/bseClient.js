@@ -45,8 +45,22 @@ export class BseClient {
           body: body ? JSON.stringify(body) : undefined,
         });
         if (!response.ok) {
-          await response.body?.cancel();
-          const error = new HttpError(502, `BSE API returned HTTP ${response.status}`);
+          // Surface only a bounded machine-readable code, never upstream
+          // messages that could contain credentials or reflected request data.
+          let code='';
+          try {
+            const reader=response.body.getReader();let length=0;const chunks=[];
+            while (true) {
+              const {value,done}=await reader.read();if (done) break;
+              length+=value.length;if (length>16384) {await reader.cancel();break;}
+              chunks.push(Buffer.from(value));
+            }
+            const payload=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            const candidate=payload.error?.code ?? payload.code;
+            if (typeof candidate==='string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) code=candidate;
+          } catch { await response.body?.cancel().catch(()=>{}); }
+          const hint=code==='INVALID_CALLBACK_URL' ? ': approve BSE_CALLBACK_URL in the exchange BSE_CALLBACK_ALLOWLIST' : '';
+          const error = new HttpError(502, `BSE API returned HTTP ${response.status}${code ? ` (${code})` : ''}${hint}`);
           error.retryable = response.status === 429 || response.status >= 500; throw error;
         }
         const reader = response.body.getReader(); const chunks = []; let length = 0;
